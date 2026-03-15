@@ -3,7 +3,7 @@ set -euo pipefail
 
 # 项目路径配置
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MAIN_WORKSPACE="/home/r1/3*3_grid_ar_detection/FAST_LIVO2_ROS2_relocation_ultra"
+MAIN_WORKSPACE="/home/r1/9_grid_ar_detection/FAST_LIVO2_ROS2_relocation_ultra"
 AR_WORKSPACE="${SCRIPT_DIR}"
 LOG_DIR="${SCRIPT_DIR}/log/one_click"
 mkdir -p "${LOG_DIR}"

@@ -134,7 +134,11 @@ class PinholeCamera(CameraModel):
                abs(intr.k3) > 1e-10 or abs(intr.p1) > 1e-10 or abs(intr.p2) > 1e-10
     
     def _apply_distortion(self, x: float, y: float) -> Tuple[float, float]:
-        """应用径向和切向畸变"""
+        """应用径向和切向畸变。
+
+        输入为归一化平面坐标 (x, y)，输出为畸变后的归一化坐标 (x_d, y_d)。
+        采用常见的径向多项式(radial) + 切向项(tangential) 模型。
+        """
         intr = self.intrinsics
         r2 = x * x + y * y
         r4 = r2 * r2
@@ -150,7 +154,12 @@ class PinholeCamera(CameraModel):
         return x_d, y_d
     
     def _remove_distortion(self, x_d: float, y_d: float, iterations: int = 10) -> Tuple[float, float]:
-        """迭代去畸变"""
+        """迭代去畸变（逆向求解）。
+
+        使用简单的固定迭代方法：每次根据当前估计计算正向畸变，
+        并调整估计以逼近给定的畸变坐标 (x_d, y_d)。
+        该方法适用于畸变较小或良性收敛的情况。
+        """
         x, y = x_d, y_d
         for _ in range(iterations):
             x_est, y_est = self._apply_distortion(x, y)
@@ -302,7 +311,7 @@ class KannalaBrandtFisheye(CameraModel):
         self.model_type = CameraModelType.FISHEYE_KANNALA_BRANDT
     
     def _distort_theta(self, theta: float) -> float:
-        """应用角度畸变"""
+        """将真实入射角 theta 映射为畸变角 theta_d（按多项式展开）。"""
         k1, k2, k3, k4 = (self.intrinsics.k1, self.intrinsics.k2, 
                           self.intrinsics.k3, self.intrinsics.k4)
         theta2 = theta * theta
@@ -314,7 +323,10 @@ class KannalaBrandtFisheye(CameraModel):
         return theta_d
     
     def _undistort_theta(self, theta_d: float, iterations: int = 10) -> float:
-        """迭代去畸变（牛顿法）"""
+        """迭代求解未畸变角 theta，给定畸变角 theta_d。
+
+        使用简化牛顿/固定步长迭代近似求解逆函数。
+        """
         theta = theta_d
         for _ in range(iterations):
             theta_est = self._distort_theta(theta)

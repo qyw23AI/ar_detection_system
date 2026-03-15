@@ -8,7 +8,7 @@
     # D435 RGB通常使用针孔模型；若你改成鱼眼镜头再切回 fisheye_*
     # camera_model: "fisheye_equidistant"
     camera_model: "pinhole"
-    camera_json: "/home/r1/3*3_grid_ar_detection/ar_calculate/d435.json"
+    camera_json: "/home/r1/9_grid_ar_detection/ar_calculate/d435.json"
 
     camera:
       fx: 606.5

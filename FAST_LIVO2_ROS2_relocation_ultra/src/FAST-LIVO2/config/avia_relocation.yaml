@@ -6,8 +6,8 @@
     # 注意：重定位模式有bug，会导致FAST-LIVO在等待初始位姿时拒绝所有传感器数据，
     # 导致内部状态未初始化而崩溃。建议使用false（纯SLAM模式）
     locate_in_prior_map: false
-    # 先验地图 pcd 保存路径
-    prior_map_path: "/home/r1/3*3_grid_ar_detection/FAST_LIVO2_ROS2_relocation_ultra/src/FAST-LIVO2/Log/relocation/all_raw_points.pcd"
+  
+    prior_map_path: "/home/r1/9_grid_ar_detection/FAST_LIVO2_ROS2_relocation_ultra/src/FAST-LIVO2/Log/relocation/all_raw_points.pcd"
     
     common:
       # 相机图像输入话题（建议与实际驱动输出一致）

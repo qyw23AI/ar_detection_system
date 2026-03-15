@@ -30,7 +30,7 @@ def generate_launch_description():
         parameters=[
             # ====== 基础配置 ======
             # 先验地图文件（PCD）路径
-            {'map_path': '/home/r1/3*3_grid_ar_detection/FAST_LIVO2_ROS2_relocation_ultra/src/FAST-LIVO2/Log/relocation/all_raw_points.pcd'},
+            {'map_path': '/home/r1/9_grid_ar_detection/FAST_LIVO2_ROS2_relocation_ultra/src/FAST-LIVO2/Log/relocation/all_raw_points.pcd'},
             # 地图坐标系名称
             {'map_frame_id': 'map'},
             # 点云类型：livox 或 standard
