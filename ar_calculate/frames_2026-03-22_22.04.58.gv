@@ -1,0 +1,14 @@
+digraph G {
+"camera_link" -> "camera_color_frame"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"motor_scs0009_base" -> "camera_link"[label=" Broadcaster: default_authority\nAverage rate: 50.245\nBuffer length: 4.12\nMost recent transform: 1774188298.654178\nOldest transform: 1774188294.534324\n"];
+"camera_link" -> "camera_color_optical_frame"[label=" Broadcaster: default_authority\nAverage rate: 50.245\nBuffer length: 4.12\nMost recent transform: 1774188298.654178\nOldest transform: 1774188294.534324\n"];
+"map" -> "camera_init"[label=" Broadcaster: default_authority\nAverage rate: 10000.0\nBuffer length: 0.0\nMost recent transform: 0.0\nOldest transform: 0.0\n"];
+"aft_mapped" -> "motor_2006_base"[label=" Broadcaster: default_authority\nAverage rate: 50.245\nBuffer length: 4.12\nMost recent transform: 1774188298.654178\nOldest transform: 1774188294.534324\n"];
+"camera_init" -> "aft_mapped"[label=" Broadcaster: default_authority\nAverage rate: 27.298\nBuffer length: 3.81\nMost recent transform: 1774188298.660431\nOldest transform: 1774188294.85058\n"];
+"motor_2006_base" -> "motor_2006_shaft"[label=" Broadcaster: default_authority\nAverage rate: 50.245\nBuffer length: 4.12\nMost recent transform: 1774188298.654178\nOldest transform: 1774188294.534324\n"];
+"motor_2006_shaft" -> "motor_scs0009_base"[label=" Broadcaster: default_authority\nAverage rate: 50.245\nBuffer length: 4.12\nMost recent transform: 1774188298.654178\nOldest transform: 1774188294.534324\n"];
+edge [style=invis];
+ subgraph cluster_legend { style=bold; color=black; label ="view_frames Result";
+"Recorded at time: 1774188298.6813715"[ shape=plaintext ] ;
+}->"map";
+}

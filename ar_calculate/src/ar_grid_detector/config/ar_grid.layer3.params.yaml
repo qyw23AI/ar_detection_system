@@ -1,0 +1,62 @@
+/**:
+  ros__parameters:
+    odom_topic: "/camera_pose_in_map"
+    image_topic: "/camera/camera/color/image_raw"
+    output_image_topic: "/ar_grid/image"
+    visible_cells_topic: "/ar_grid/visible_cells"
+
+    camera_model: "pinhole"
+    camera_json: "/home/r1/9_grid_ar_detection/ar_calculate/d435.json"
+
+    camera:
+      fx: 606.5
+      fy: 605.77
+      cx: 325.77
+      cy: 256.54
+      width: 640
+      height: 480
+      k1: 0.0
+      k2: 0.0
+      k3: 0.0
+      k4: 0.0
+      p1: 0.0
+      p2: 0.0
+
+    grid:
+      use_yaml: false
+      yaml_path: ""
+      use_legacy_nine_points: false
+      legacy_nine_points_yaml: "/home/r1/Slam/ar_calculate/grid_example.yaml"
+
+      rows: 3
+      cols: 3
+
+      cell_width: 0.03
+      cell_height: 0.03
+      strict_size_check: false
+      size_tolerance: 0.0001
+
+      corner_top_left: [1.671702, -0.640819, 0.688713]
+      corner_top_right: [1.470960, -1.178978, 0.678743]
+      corner_bottom_left: [1.676878, -0.607198, 0.095880]
+      input_is_cell_centers: true
+
+    draw:
+      cell_border_color_bgr: [255, 0, 0]
+      cell_border_thickness: 2
+      cell_center_color_bgr: [0, 0, 255]
+      cell_center_radius: 4
+      cell_center_thickness: -1
+      label_color_bgr: [0, 255, 255]
+      show_labels: true
+      show_status_text: true
+      show_window: true
+      window_name: "AR Grid Overlay"
+
+    extrinsic_rpy_xyz: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    extrinsic_matrix_4x4: [
+      1.0, 0.0, 0.0, 0.0,
+      0.0, 1.0, 0.0, 0.0,
+      0.0, 0.0, 1.0, 0.0,
+      0.0, 0.0, 0.0, 1.0
+    ]

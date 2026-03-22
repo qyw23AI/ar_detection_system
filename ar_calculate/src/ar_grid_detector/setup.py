@@ -10,7 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/ar_grid.launch.py']),
-        ('share/' + package_name + '/config', ['config/ar_grid.params.yaml', 'config/grid_example.yaml']),
+        ('share/' + package_name + '/config', ['config/ar_grid.params.yaml', 'config/ar_grid.layer3.params.yaml', 'config/grid_example.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

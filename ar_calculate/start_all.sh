@@ -57,6 +57,7 @@ PIDS=()
 ENABLE_CAMERA_DRIVER="${ENABLE_CAMERA_DRIVER:-1}"
 ENABLE_AR_DETECTOR="${ENABLE_AR_DETECTOR:-1}"
 ENABLE_RELOCALIZATION="${ENABLE_RELOCALIZATION:-1}"
+ENABLE_SENSOR_SPATIAL_TRANSFORM="${ENABLE_SENSOR_SPATIAL_TRANSFORM:-0}"
 
 # 相机后端选择: realsense | usb | none
 CAMERA_BACKEND="${CAMERA_BACKEND:-realsense}"
@@ -69,6 +70,7 @@ USB_CAMERA_LAUNCH_CMD="${USB_CAMERA_LAUNCH_CMD:-ros2 run usb_cam usb_cam_node_ex
 # AR 检测节点启动命令（180度鱼眼相机专用launch）
 # AR_GRID_LAUNCH_CMD="${AR_GRID_LAUNCH_CMD:-ros2 launch ar_grid_detector ar_grid_fisheye.launch.py}"
 AR_GRID_LAUNCH_CMD="${AR_GRID_LAUNCH_CMD:-ros2 launch ar_grid_detector ar_grid.launch.py}"
+SENSOR_SPATIAL_TRANSFORM_LAUNCH_CMD="${SENSOR_SPATIAL_TRANSFORM_LAUNCH_CMD:-ros2 launch sensor_spatial_transform sensor_spatial_transform.launch.py}"
 # 向后兼容旧变量：ENABLE_AR_OVERLAY
 if [[ -n "${ENABLE_AR_OVERLAY:-}" ]]; then
   ENABLE_AR_DETECTOR="${ENABLE_AR_OVERLAY}"
@@ -178,6 +180,16 @@ else
   echo "[STEP 4/6] Relocalization disabled (set ENABLE_RELOCALIZATION=1 to enable)"
 fi
 
+# 5. 启动 传感器空间对齐
+if [[ "${ENABLE_SENSOR_SPATIAL_TRANSFORM}" == "1" ]]; then
+  echo "[STEP 5/6] Starting Layer3 sensor spatial transform..."
+  start_bg "sensor_spatial_transform" "${SENSOR_SPATIAL_TRANSFORM_LAUNCH_CMD}"
+  sleep 2
+  echo "  ✓ Layer3 sensor spatial transform started"
+else
+  echo "[STEP 5/6] Layer3 sensor spatial transform disabled (set ENABLE_SENSOR_SPATIAL_TRANSFORM=1 to enable)"
+fi
+
 # 5. 启动 AR 检测节点（新功能包）
 if [[ "${ENABLE_AR_DETECTOR}" == "1" ]]; then
   echo "[STEP 5/6] Starting AR grid detector node..."
@@ -206,6 +218,7 @@ echo "  • Camera driver:      $( [[ "${ENABLE_CAMERA_DRIVER}" == "1" ]] && ech
 echo "  • Livox driver:       ENABLED"
 echo "  • FAST-LIVO2:         ENABLED"
 echo "  • Relocalization:     $( [[ "${ENABLE_RELOCALIZATION}" == "1" ]] && echo "ENABLED" || echo "DISABLED" )"
+echo "  • Layer3 transform:   $( [[ "${ENABLE_SENSOR_SPATIAL_TRANSFORM}" == "1" ]] && echo "ENABLED" || echo "DISABLED" )"
 echo "  • AR detector:        $( [[ "${ENABLE_AR_DETECTOR}" == "1" ]] && echo "ENABLED" || echo "DISABLED" )"
 echo ""
 echo "Checking ROS2 topics..."
@@ -222,6 +235,16 @@ for topic in "/livox/lidar" "/livox/imu" "/aft_mapped_in_map" "/fisheye_camera/i
   fi
 done
 
+if [[ "${ENABLE_SENSOR_SPATIAL_TRANSFORM}" == "1" ]]; then
+  for topic in "/camera_pose_in_map" "/tf"; do
+    if ros2 topic list 2>/dev/null | grep -qx "${topic}"; then
+      echo "  ✓ ${topic}"
+    else
+      echo "  ✗ ${topic} (not available)"
+    fi
+  done
+fi
+
 echo ""
 echo "=========================================="
 echo "  System is running!"
@@ -236,11 +259,15 @@ if [[ "${ENABLE_AR_DETECTOR}" == "1" ]]; then
   echo "  • View AR image: ros2 run rqt_image_view rqt_image_view /ar_grid/image"
   echo "  • View visible cells: ros2 topic echo /ar_grid/visible_cells"
 fi
+if [[ "${ENABLE_SENSOR_SPATIAL_TRANSFORM}" == "1" ]]; then
+  echo "  • View adapted odom: ros2 topic echo /camera_pose_in_map"
+fi
 echo ""
 echo "Environment variable examples:"
 echo "  • CAMERA_BACKEND=realsense ./start_all_with_offset.sh"
 echo "  • CAMERA_BACKEND=usb USB_CAMERA_LAUNCH_CMD='ros2 launch usb_cam camera.launch.py' ./start_all_with_offset.sh"
 echo "  • ENABLE_CAMERA_DRIVER=0 ENABLE_AR_DETECTOR=1 ./start_all_with_offset.sh"
+echo "  • ENABLE_SENSOR_SPATIAL_TRANSFORM=1 ENABLE_AR_DETECTOR=1 ./start_all_with_offset.sh"
 echo ""
 echo "Press Ctrl+C to stop all processes..."
 echo ""

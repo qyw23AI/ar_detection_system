@@ -1,0 +1,43 @@
+/**:
+  ros__parameters:
+    publish_rate_hz: 50.0
+    require_ack: false
+    cmd_topic: "/gimbal/target_cmd"
+    ack_topic: "/gimbal/ack"
+
+    map_frame: "map"
+    lidar_frame: "aft_mapped"
+    motor_2006_base_frame: "motor_2006_base"
+    motor_2006_shaft_frame: "motor_2006_shaft"
+    motor_scs0009_base_frame: "motor_scs0009_base"
+    camera_link_frame: "camera_link"
+    camera_frame: "camera_color_optical_frame"
+    camera_optical_frame: "camera_color_optical_frame"
+
+    pitch_min: -3.1415926
+    pitch_max: 3.1415926
+    yaw_min: -3.1415926
+    yaw_max: 3.1415926
+
+    # 静态外参1: lidar_link -> motor_2006_base
+    lidar_to_motor_2006_base_xyz: [0.0, 0.0, 0.0]
+    lidar_to_motor_2006_base_rpy: [0.0, 0.0, 0.0]
+
+    # 静态外参2: motor_2006_shaft -> motor_scs0009_base
+    motor_2006_shaft_to_scs0009_base_xyz: [0.0, 0.0, 0.0]
+    motor_2006_shaft_to_scs0009_base_rpy: [0.0, 0.0, 0.0]
+
+    # 静态外参3: camera_link -> camera_color_optical_frame
+    camera_link_to_optical_xyz: [0.0, 0.0, 0.0]
+    camera_link_to_optical_rpy: [-1.5707963, 0.0, -1.5707963]
+
+    odom_topic: "/camera_pose_in_map"
+    tf_lookup_timeout_sec: 0.05
+    pose_covariance: [
+      0.0001, 0.0,    0.0,    0.0,   0.0,   0.0,
+      0.0,    0.0001, 0.0,    0.0,   0.0,   0.0,
+      0.0,    0.0,    0.0001, 0.0,   0.0,   0.0,
+      0.0,    0.0,    0.0,    0.001, 0.0,   0.0,
+      0.0,    0.0,    0.0,    0.0,   0.001, 0.0,
+      0.0,    0.0,    0.0,    0.0,   0.0,   0.001
+    ]
