@@ -6,7 +6,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -25,7 +25,6 @@ from ar_grid_detector_py.camera_models import CameraModelType, create_camera_fro
 from ar_grid_detector_py.grid_generator import (
     GridFrame,
     GridFrameGenerator,
-    convert_cell_centers_to_corners,
     convert_legacy_nine_grid_points,
 )
 from ar_grid_detector.msg import GridCell, GridCellArray
@@ -55,7 +54,8 @@ class ArGridNode(Node):
 
         self.t_c_s = self._load_extrinsic_t_c_s()
         self.camera_model = self._load_camera_model()
-        self.grid_frame = self._load_or_generate_grid_frame()
+        self.grid_groups = self._load_or_generate_grid_groups()
+        self.total_cells = int(sum(frame.total_cells for _, frame in self.grid_groups))
 
         odom_topic = str(self.get_parameter("odom_topic").value)
         image_topic = str(self.get_parameter("image_topic").value)
@@ -68,7 +68,13 @@ class ArGridNode(Node):
         self.visible_cells_pub = self.create_publisher(GridCellArray, visible_cells_topic, 5)
 
         self.get_logger().info(f"Camera model: {self.get_parameter('camera_model').value}")
-        self.get_logger().info(f"Grid size: rows={self.grid_frame.rows}, cols={self.grid_frame.cols}, total={self.grid_frame.total_cells}")
+        group_summary = ", ".join(
+            f"G{group_id}:{frame.rows}x{frame.cols}({frame.total_cells})"
+            for group_id, frame in self.grid_groups
+        )
+        self.get_logger().info(
+            f"Grid groups={len(self.grid_groups)}, total_cells={self.total_cells}, details=[{group_summary}]"
+        )
         self.get_logger().info(f"Subscribed odom={odom_topic}, image={image_topic}")
         self.get_logger().info(f"Publishing overlay image to {output_image_topic}")
         self.get_logger().info(f"Publishing visible cells to {visible_cells_topic}")
@@ -98,16 +104,20 @@ class ArGridNode(Node):
         self.declare_parameter("grid.yaml_path", "")
         self.declare_parameter("grid.use_legacy_nine_points", False)
         self.declare_parameter("grid.legacy_nine_points_yaml", "/home/r1/Slam/ar_calculate/nine_grid_points.yaml")
+        self.declare_parameter("grid.default_group_id", 0)
+        self.declare_parameter("grid.groups_yaml", "")
         self.declare_parameter("grid.rows", 3)
         self.declare_parameter("grid.cols", 3)
         self.declare_parameter("grid.cell_width", 0.3)
         self.declare_parameter("grid.cell_height", 0.3)
+        self.declare_parameter("grid.centers_size_source", "inferred")
         self.declare_parameter("grid.strict_size_check", False)
         self.declare_parameter("grid.size_tolerance", 1e-4)
         self.declare_parameter("grid.corner_top_left", [0.0, 0.0, 0.0])
         self.declare_parameter("grid.corner_top_right", [0.9, 0.0, 0.0])
         self.declare_parameter("grid.corner_bottom_left", [0.0, 0.9, 0.0])
         self.declare_parameter("grid.input_is_cell_centers", False)
+        self.declare_parameter("grid.single_row_down_axis", [0.0, 0.0, -1.0])
 
         self.declare_parameter("draw.cell_border_color_bgr", [255, 0, 0])
         self.declare_parameter("draw.cell_border_thickness", 2)
@@ -195,6 +205,36 @@ class ArGridNode(Node):
                 lineType=cv2.LINE_AA,
             )
 
+    def _compute_projected_visible_area_ratio(
+        self,
+        corners_px: List[Tuple[float, float]],
+        image_width: int,
+        image_height: int,
+    ) -> float:
+        if len(corners_px) != 4 or image_width <= 1 or image_height <= 1:
+            return 0.0
+
+        quad = np.asarray(corners_px, dtype=np.float32).reshape(-1, 1, 2)
+        quad_area = float(abs(cv2.contourArea(quad)))
+        if quad_area <= 1e-6:
+            return 0.0
+
+        image_rect = np.array(
+            [[0.0, 0.0], [float(image_width - 1), 0.0], [float(image_width - 1), float(image_height - 1)], [0.0, float(image_height - 1)]],
+            dtype=np.float32,
+        ).reshape(-1, 1, 2)
+
+        try:
+            inter_area, _ = cv2.intersectConvexConvex(quad, image_rect)
+        except cv2.error:
+            return 0.0
+
+        if inter_area <= 0.0:
+            return 0.0
+
+        ratio = float(inter_area) / quad_area
+        return max(0.0, min(1.0, ratio))
+
     def _load_camera_from_json(self, json_path: Path) -> None:
         if not json_path.exists():
             raise FileNotFoundError(f"camera_json not found: {json_path}")
@@ -266,6 +306,91 @@ class ArGridNode(Node):
         trans = np.array([x, y, z], dtype=np.float64)
         return make_transform(rot, trans)
 
+    def _load_or_generate_grid_groups(self) -> List[Tuple[int, GridFrame]]:
+        groups_yaml_raw = str(self.get_parameter("grid.groups_yaml").value).strip()
+        if groups_yaml_raw:
+            return self._load_grid_groups_from_inline_yaml(groups_yaml_raw)
+
+        default_group_id = int(self.get_parameter("grid.default_group_id").value)
+        single_frame = self._load_or_generate_grid_frame()
+        return [(default_group_id, single_frame)]
+
+    def _load_grid_groups_from_inline_yaml(self, groups_yaml_raw: str) -> List[Tuple[int, GridFrame]]:
+        parsed = yaml.safe_load(groups_yaml_raw)
+        if not isinstance(parsed, list) or len(parsed) == 0:
+            raise ValueError("grid.groups_yaml must be a non-empty YAML list")
+
+        groups: List[Tuple[int, GridFrame]] = []
+        seen_group_ids: Set[int] = set()
+        for idx, item in enumerate(parsed):
+            if not isinstance(item, dict):
+                raise ValueError(f"grid.groups_yaml[{idx}] must be a mapping")
+
+            group_id = int(item.get("group_id", idx))
+            if group_id in seen_group_ids:
+                raise ValueError(f"duplicate group_id in grid.groups_yaml: {group_id}")
+            seen_group_ids.add(group_id)
+
+            rows = int(item["rows"])
+            cols = int(item["cols"])
+            if rows <= 0 or cols <= 0:
+                raise ValueError(f"group_id={group_id}: rows/cols must be > 0")
+
+            cell_width_cfg = item.get("cell_width", None)
+            cell_height_cfg = item.get("cell_height", None)
+            strict_size_check = bool(item.get("strict_size_check", False))
+            size_tolerance = float(item.get("size_tolerance", 1e-4))
+            input_is_cell_centers = bool(item.get("input_is_cell_centers", False))
+            size_source = str(item.get("centers_size_source", self.get_parameter("grid.centers_size_source").value)).strip().lower()
+
+            cell_width = float(cell_width_cfg) if cell_width_cfg is not None else None
+            cell_height = float(cell_height_cfg) if cell_height_cfg is not None else None
+            if cell_width is not None and cell_width <= 0.0:
+                cell_width = None
+            if cell_height is not None and cell_height <= 0.0:
+                cell_height = None
+
+            corner_top_left = np.asarray(item["corner_top_left"], dtype=np.float64)
+            corner_top_right = np.asarray(item["corner_top_right"], dtype=np.float64)
+            raw_bottom_left = item.get("corner_bottom_left", None)
+            corner_bottom_left = np.asarray(raw_bottom_left, dtype=np.float64) if raw_bottom_left is not None else np.zeros(3, dtype=np.float64)
+
+            if input_is_cell_centers:
+                single_row_down_axis = np.asarray(
+                    item.get("single_row_down_axis", [0.0, 0.0, -1.0]),
+                    dtype=np.float64,
+                )
+                frame = GridFrameGenerator.generate_from_center_points(
+                    center_top_left=corner_top_left,
+                    center_top_right=corner_top_right,
+                    center_bottom_left=corner_bottom_left if raw_bottom_left is not None else None,
+                    rows=rows,
+                    cols=cols,
+                    cell_width=cell_width,
+                    cell_height=cell_height,
+                    size_source=size_source,
+                    strict_size_check=strict_size_check,
+                    size_tolerance=size_tolerance,
+                    single_row_down_axis=single_row_down_axis,
+                )
+            else:
+                if corner_top_left.size != 3 or corner_top_right.size != 3 or corner_bottom_left.size != 3:
+                    raise ValueError(f"group_id={group_id}: corners must be [x,y,z]")
+                frame = GridFrameGenerator.generate_from_three_corners(
+                    corner_top_left=corner_top_left,
+                    corner_top_right=corner_top_right,
+                    corner_bottom_left=corner_bottom_left,
+                    rows=rows,
+                    cols=cols,
+                    cell_width=cell_width,
+                    cell_height=cell_height,
+                    strict_size_check=strict_size_check,
+                    size_tolerance=size_tolerance,
+                )
+            groups.append((group_id, frame))
+
+        return groups
+
     def _load_or_generate_grid_frame(self) -> GridFrame:
         use_legacy_nine_points = bool(self.get_parameter("grid.use_legacy_nine_points").value)
         if use_legacy_nine_points:
@@ -293,6 +418,7 @@ class ArGridNode(Node):
         cols = int(self.get_parameter("grid.cols").value)
         cell_width = float(self.get_parameter("grid.cell_width").value)
         cell_height = float(self.get_parameter("grid.cell_height").value)
+        centers_size_source = str(self.get_parameter("grid.centers_size_source").value).strip().lower()
         strict_size_check = bool(self.get_parameter("grid.strict_size_check").value)
         size_tolerance = float(self.get_parameter("grid.size_tolerance").value)
         input_is_cell_centers = bool(self.get_parameter("grid.input_is_cell_centers").value)
@@ -306,20 +432,25 @@ class ArGridNode(Node):
         # 参数语义说明：
         # - input_is_cell_centers=False：corner_* 直接表示“外框角点”
         # - input_is_cell_centers=True：corner_* 实际表示“左上/右上/左下格子的中心点”
-        #   需要先反推外框角点，再统一进入角点驱动的网格生成流程。
+        #   直接使用中心点进行网格构建，不再先转外角点再反推尺寸。
         if input_is_cell_centers:
+            single_row_down_axis = np.asarray(self.get_parameter("grid.single_row_down_axis").value, dtype=np.float64)
             self.get_logger().info(
-                f"Converting cell centers to corners (rows={rows}, cols={cols})"
+                f"Generating grid from center points directly (rows={rows}, cols={cols}, size_source={centers_size_source})"
             )
-            corner_top_left, corner_top_right, corner_bottom_left = convert_cell_centers_to_corners(
+            center_bottom_left_input = None if rows == 1 else corner_bottom_left
+            return GridFrameGenerator.generate_from_center_points(
                 center_top_left=corner_top_left,
                 center_top_right=corner_top_right,
-                center_bottom_left=corner_bottom_left,
+                center_bottom_left=center_bottom_left_input,
                 rows=rows,
                 cols=cols,
-            )
-            self.get_logger().info(
-                f"Converted corners: TL={corner_top_left}, TR={corner_top_right}, BL={corner_bottom_left}"
+                cell_width=cell_width,
+                cell_height=cell_height,
+                size_source=centers_size_source,
+                strict_size_check=strict_size_check,
+                size_tolerance=size_tolerance,
+                single_row_down_axis=single_row_down_axis,
             )
 
         return GridFrameGenerator.generate_from_three_corners(
@@ -584,226 +715,235 @@ class ArGridNode(Node):
         # 构建 ROS GridCellArray 消息，用于发布到 /ar_grid/visible_cells 话题
         cells_msg = GridCellArray()
         cells_msg.header = msg.header  # 继承图像时间戳
-        cells_msg.rows = self.grid_frame.rows
-        cells_msg.cols = self.grid_frame.cols
-        cells_msg.total_cells = self.grid_frame.total_cells
+        cells_msg.rows = -1
+        cells_msg.cols = -1
+        cells_msg.total_groups = len(self.grid_groups)
+        cells_msg.visible_group_ids = []
+        cells_msg.total_cells = self.total_cells
         cells_msg.visible_cells = 0  # 后续会累加
         cells_msg.cells = []
         cells_msg.visible_cell_ids = []
 
         visible_count = 0  # 统计有多少个格子成功投影到图像内
         front_count = 0    # 统计有多少个格子的中心点在相机前方（z > 0）
+        visible_group_ids: Set[int] = set()
+
+        if len(self.grid_groups) == 1:
+            cells_msg.rows = self.grid_groups[0][1].rows
+            cells_msg.cols = self.grid_groups[0][1].cols
 
         # ============== 第八步：逐格子投影处理 ==============
         # 对每个九宫格格子进行投影、可见性判定、绘制标注
-        for cell_id in sorted(self.grid_frame.cells.keys()):
-            cell = self.grid_frame.cells[cell_id]
+        for group_id, grid_frame in self.grid_groups:
+            for cell_id in sorted(grid_frame.cells.keys()):
+                cell = grid_frame.cells[cell_id]
 
-            # -------- 8.1) 格子中心点投影：world -> camera --------
-            # 齐次坐标：加上第 4 个分量 1.0（便于 4x4 矩阵乘法）
-            center_w_h = np.array([
-                cell.center_world[0],
-                cell.center_world[1],
-                cell.center_world[2],
-                1.0,
-            ], dtype=np.float64)
-            # 中心点在相机系的坐标（齐次）
-            center_c_h = t_c_w @ center_w_h
-            # 提取 xyz，丢弃齐次分量
-            center_c = center_c_h[:3]
-            # center_c[0], center_c[1]: 相机系中的 x, y 坐标
-            # center_c[2]: 深度（z 需要 > 0 才能投影到图像前方）
+                # -------- 8.1) 格子中心点投影：world -> camera --------
+                # 齐次坐标：加上第 4 个分量 1.0（便于 4x4 矩阵乘法）
+                center_w_h = np.array([
+                    cell.center_world[0],
+                    cell.center_world[1],
+                    cell.center_world[2],
+                    1.0,
+                ], dtype=np.float64)
+                # 中心点在相机系的坐标（齐次）
+                center_c_h = t_c_w @ center_w_h
+                # 提取 xyz，丢弃齐次分量
+                center_c = center_c_h[:3]
+                # center_c[0], center_c[1]: 相机系中的 x, y 坐标
+                # center_c[2]: 深度（z 需要 > 0 才能投影到图像前方）
 
-            corners_c: List[np.ndarray] = []     # 所有 4 个角点在相机系中的坐标
-            corners_px: List[Tuple[float, float]] = []  # 所有 4 个角点在图像中的像素坐标 (u, v)
+                corners_px: List[Tuple[float, float]] = []  # 所有 4 个角点在图像中的像素坐标 (u, v)
 
-            # -------- 8.2) 格子四角点投影与深度检查 --------
-            corners_front = True  # 标志：是否所有 4 个角点都在相机前方
-            for cw in cell.corners_world:
-                # 投影该角点：world -> camera
-                p_w_h = np.array([cw[0], cw[1], cw[2], 1.0], dtype=np.float64)
-                p_c_h = t_c_w @ p_w_h
-                p_c = p_c_h[:3]
-                corners_c.append(p_c)
+                # -------- 8.2) 格子四角点投影与深度检查 --------
+                corners_front = True  # 标志：是否所有 4 个角点都在相机前方
+                for cw in cell.corners_world:
+                    # 投影该角点：world -> camera
+                    p_w_h = np.array([cw[0], cw[1], cw[2], 1.0], dtype=np.float64)
+                    p_c_h = t_c_w @ p_w_h
+                    p_c = p_c_h[:3]
 
-                # -------- 8.3) 深度判定 --------
-                # 如果深度 z <= 0，说明该点在相机后方或极近处，无法投影到图像
-                # 阈值 1e-6 是为了避免舍入误差（点在相机光心非常近）
-                if p_c[2] <= 1e-6:
-                    corners_front = False
-                    break
+                    # -------- 8.3) 深度判定 --------
+                    # 如果深度 z <= 0，说明该点在相机后方或极近处，无法投影到图像
+                    # 阈值 1e-6 是为了避免舍入误差（点在相机光心非常近）
+                    if p_c[2] <= 1e-6:
+                        corners_front = False
+                        break
 
-                # -------- 8.4) 相机模型投影：camera 3D -> pixel 2D --------
-                # 使用已加载的相机模型（pinhole 或 fisheye）进行投影
-                # 返回 (u, v) 像素坐标，或 None 如果投影失败（畸变模型异常、点太靠近边缘等）
-                uv = self.camera_model.project_point(p_c)
-                if uv is None:
-                    corners_front = False
-                    break
-                corners_px.append(uv)
+                    # -------- 8.4) 相机模型投影：camera 3D -> pixel 2D --------
+                    # 使用已加载的相机模型（pinhole 或 fisheye）进行投影
+                    # 返回 (u, v) 像素坐标，或 None 如果投影失败（畸变模型异常、点太靠近边缘等）
+                    uv = self.camera_model.project_point(p_c)
+                    if uv is None:
+                        corners_front = False
+                        break
+                    corners_px.append(uv)
 
-            # -------- 8.5) 中心点投影与计数 --------
-            # 统计有多少格子的中心点在相机前方
-            if center_c[2] > 1e-6:
-                front_count += 1
+                # -------- 8.5) 中心点投影与计数 --------
+                # 统计有多少格子的中心点在相机前方
+                if center_c[2] > 1e-6:
+                    front_count += 1
 
-            # 中心点也需要投影检查（深度合法性 + 投影失败处理）
-            center_uv = self.camera_model.project_point(center_c) if center_c[2] > 1e-6 else None
-            # 判断中心点是否落在图像边界内
-            center_in_image = (
-                center_uv is not None and 0 <= center_uv[0] < w and 0 <= center_uv[1] < h
-            )
-            
-            # -------- 8.6) 可见性判定逻辑 --------
-            # 格子可见需要满足两个条件：
-            # 1) 所有 4 个角点都能成功投影（has_valid_corners）
-            # 2) 至少有一个点（中心或某个角点）落在图像范围内
-            #
-            # 这样设计的目的是：
-            #   - 避免因投影失败（如畸变异常）产生垃圾数据
-            #   - 允许部分角点在图像边缘外，只要整体格子有部分可见
-            #   - 需要至少一个点在图像内，否则没有投影价值
-            
-            has_valid_corners = corners_front and len(corners_px) == 4
-            any_corner_in_image = has_valid_corners and any(
-                0 <= u < w and 0 <= v < h for (u, v) in corners_px
-            )
-
-            # 综合判定：格子是否在最终画面中可见
-            # visible = 所有角点投影成功 AND (中心在图内 OR 至少一个角点在图内)
-            visible = bool(has_valid_corners and (center_in_image or any_corner_in_image))
-            if visible:
-                visible_count += 1
-
-            # -------- 8.7) 构建 GridCell 消息 --------
-            # 每个格子对应一条 GridCell 消息，包含其投影结果与可见性
-            cell_msg = GridCell()
-            cell_msg.header = msg.header  # 继承图像时间戳
-            cell_msg.cell_id = int(cell.cell_id)  # 1-9 的格子编号
-            cell_msg.row = int(cell.row)  # 行号
-            cell_msg.col = int(cell.col)  # 列号
-            cell_msg.is_visible = bool(visible)
-
-            # 格子在世界坐标系中的中心位置（固定，不随相机移动变化）
-            cell_msg.position_world_frame = Point(
-                x=float(cell.center_world[0]),
-                y=float(cell.center_world[1]),
-                z=float(cell.center_world[2]),
-            )
-
-            # -------- 8.8) 可见格子的详细投影信息 --------
-            if visible:
-                # 格子在相机坐标系中的中心位置（深度信息用于距离计算）
-                cell_msg.position_camera_frame = Point(
-                    x=float(center_c[0]),
-                    y=float(center_c[1]),
-                    z=float(center_c[2]),  # 深度，单位：米
+                # 中心点也需要投影检查（深度合法性 + 投影失败处理）
+                center_uv = self.camera_model.project_point(center_c) if center_c[2] > 1e-6 else None
+                # 判断中心点是否落在图像边界内
+                center_in_image = (
+                    center_uv is not None and 0 <= center_uv[0] < w and 0 <= center_uv[1] < h
                 )
-                # 格子四个角点的像素坐标（这是最终要在图像上绘制的位置）
-                # ordered[i] = (u, v) 表示第 i 角的像素坐标
-                ordered = [(0, 0), (0, 0), (0, 0), (0, 0)]
-                ordered[0] = (float(corners_px[0][0]), float(corners_px[0][1]))
-                ordered[1] = (float(corners_px[1][0]), float(corners_px[1][1]))
-                ordered[2] = (float(corners_px[2][0]), float(corners_px[2][1]))
-                ordered[3] = (float(corners_px[3][0]), float(corners_px[3][1]))
+            
+                # -------- 8.6) 可见性判定逻辑 --------
+                # 可见条件A：至少一个角点在图像内，且格子投影面积有至少 1/4 落在图像内
+                # 可见条件B：格子中心点在图像内（近距离包裹图像场景）
+                has_valid_corners = corners_front and len(corners_px) == 4
+                any_corner_in_image = has_valid_corners and any(
+                    0 <= u < w and 0 <= v < h for (u, v) in corners_px
+                )
+                visible_area_ratio = (
+                    self._compute_projected_visible_area_ratio(corners_px, w, h)
+                    if has_valid_corners else 0.0
+                )
+                visible_by_area = bool(any_corner_in_image and visible_area_ratio >= 0.25)
+                visible_by_center = bool(center_in_image)
 
-                # 保存四个角点的像素坐标到消息
-                cell_msg.corners_pixel = [
-                    Point32(x=float(ordered[0][0]), y=float(ordered[0][1]), z=0.0),
-                    Point32(x=float(ordered[1][0]), y=float(ordered[1][1]), z=0.0),
-                    Point32(x=float(ordered[2][0]), y=float(ordered[2][1]), z=0.0),
-                    Point32(x=float(ordered[3][0]), y=float(ordered[3][1]), z=0.0),
-                ]
+                visible = bool(has_valid_corners and (visible_by_area or visible_by_center))
+                if visible:
+                    visible_count += 1
+                    visible_group_ids.add(int(group_id))
 
-                # 计算中心点的像素坐标（用于在图像上标注 ID）
-                # 注：这里计算的 center_u/v 是四个角点的平均，可能与相机投影的结果有微小差异
-                # 但对绘制标注足够精确
-                center_u = sum(p[0] for p in ordered) / 4.0
-                center_v = sum(p[1] for p in ordered) / 4.0
-                cell_msg.center_pixel = Point32(x=float(center_u), y=float(center_v), z=0.0)
+                # -------- 8.7) 构建 GridCell 消息 --------
+                # 每个格子对应一条 GridCell 消息，包含其投影结果与可见性
+                cell_msg = GridCell()
+                cell_msg.header = msg.header  # 继承图像时间戳
+                cell_msg.group_id = int(group_id)
+                cell_msg.cell_id = int(cell.cell_id)  # 组内格子编号
+                cell_msg.row = int(cell.row)  # 行号
+                cell_msg.col = int(cell.col)  # 列号
+                cell_msg.is_visible = bool(visible)
 
-                cv_pts = np.array([[int(round(u)), int(round(v))] for (u, v) in ordered], dtype=np.int32)
-                if use_curved_grid:
-                    world_corners = cell.corners_world
-                    self._draw_sampled_world_edge(
-                        image,
-                        world_corners[0],
-                        world_corners[1],
-                        t_c_w,
-                        border_color,
-                        border_thickness,
-                        curve_samples_per_edge,
+                # 格子在世界坐标系中的中心位置（固定，不随相机移动变化）
+                cell_msg.position_world_frame = Point(
+                    x=float(cell.center_world[0]),
+                    y=float(cell.center_world[1]),
+                    z=float(cell.center_world[2]),
+                )
+
+                # -------- 8.8) 可见格子的详细投影信息 --------
+                if visible:
+                    # 格子在相机坐标系中的中心位置（深度信息用于距离计算）
+                    cell_msg.position_camera_frame = Point(
+                        x=float(center_c[0]),
+                        y=float(center_c[1]),
+                        z=float(center_c[2]),  # 深度，单位：米
                     )
-                    self._draw_sampled_world_edge(
-                        image,
-                        world_corners[1],
-                        world_corners[2],
-                        t_c_w,
-                        border_color,
-                        border_thickness,
-                        curve_samples_per_edge,
-                    )
-                    self._draw_sampled_world_edge(
-                        image,
-                        world_corners[2],
-                        world_corners[3],
-                        t_c_w,
-                        border_color,
-                        border_thickness,
-                        curve_samples_per_edge,
-                    )
-                    self._draw_sampled_world_edge(
-                        image,
-                        world_corners[3],
-                        world_corners[0],
-                        t_c_w,
-                        border_color,
-                        border_thickness,
-                        curve_samples_per_edge,
-                    )
+                    # 格子四个角点的像素坐标（这是最终要在图像上绘制的位置）
+                    # ordered[i] = (u, v) 表示第 i 角的像素坐标
+                    ordered = [
+                        (float(corners_px[0][0]), float(corners_px[0][1])),
+                        (float(corners_px[1][0]), float(corners_px[1][1])),
+                        (float(corners_px[2][0]), float(corners_px[2][1])),
+                        (float(corners_px[3][0]), float(corners_px[3][1])),
+                    ]
+
+                    # 保存四个角点的像素坐标到消息
+                    cell_msg.corners_pixel = [
+                        Point32(x=float(ordered[0][0]), y=float(ordered[0][1]), z=0.0),
+                        Point32(x=float(ordered[1][0]), y=float(ordered[1][1]), z=0.0),
+                        Point32(x=float(ordered[2][0]), y=float(ordered[2][1]), z=0.0),
+                        Point32(x=float(ordered[3][0]), y=float(ordered[3][1]), z=0.0),
+                    ]
+
+                    # 中心像素优先采用直接投影值，避免近距离大视角下角点均值失真
+                    if center_uv is not None:
+                        center_u = float(center_uv[0])
+                        center_v = float(center_uv[1])
+                    else:
+                        center_u = sum(p[0] for p in ordered) / 4.0
+                        center_v = sum(p[1] for p in ordered) / 4.0
+                    cell_msg.center_pixel = Point32(x=float(center_u), y=float(center_v), z=0.0)
+
+                    cv_pts = np.array([[int(round(u)), int(round(v))] for (u, v) in ordered], dtype=np.int32)
+                    if use_curved_grid:
+                        world_corners = cell.corners_world
+                        self._draw_sampled_world_edge(
+                            image,
+                            world_corners[0],
+                            world_corners[1],
+                            t_c_w,
+                            border_color,
+                            border_thickness,
+                            curve_samples_per_edge,
+                        )
+                        self._draw_sampled_world_edge(
+                            image,
+                            world_corners[1],
+                            world_corners[2],
+                            t_c_w,
+                            border_color,
+                            border_thickness,
+                            curve_samples_per_edge,
+                        )
+                        self._draw_sampled_world_edge(
+                            image,
+                            world_corners[2],
+                            world_corners[3],
+                            t_c_w,
+                            border_color,
+                            border_thickness,
+                            curve_samples_per_edge,
+                        )
+                        self._draw_sampled_world_edge(
+                            image,
+                            world_corners[3],
+                            world_corners[0],
+                            t_c_w,
+                            border_color,
+                            border_thickness,
+                            curve_samples_per_edge,
+                        )
+                    else:
+                        cv2.polylines(image, [cv_pts], isClosed=True, color=border_color, thickness=border_thickness, lineType=cv2.LINE_AA)
+
+                    c_u_i, c_v_i = int(round(center_u)), int(round(center_v))
+                    # -------- 8.10) 格子中心点绘制 - 用圆点标记格子中心 --------
+                    cv2.circle(image, (c_u_i, c_v_i), center_radius, center_color, center_thickness, lineType=cv2.LINE_AA)
+                    
+                    # -------- 8.11) 可选的格子标签 --------
+                    # 显示“组号+编号”，便于多组调试
+                    if show_labels:
+                        cv2.putText(
+                            image,
+                            f"G{group_id}-C{cell.cell_id}",
+                            (c_u_i + 5, c_v_i - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            label_color,
+                            2,
+                            lineType=cv2.LINE_AA,
+                        )
+
+                    # -------- 8.12) 记录可见格子信息 --------
+                    # 跟踪此可见格子的 ID 和深度，用于下游处理
+                    cells_msg.visible_cell_ids.append(int(cell.cell_id))
+                    cell_msg.depth = float(center_c[2])
                 else:
-                    cv2.polylines(image, [cv_pts], isClosed=True, color=border_color, thickness=border_thickness, lineType=cv2.LINE_AA)
-
-                c_u_i, c_v_i = int(round(center_u)), int(round(center_v))
-                # -------- 8.10) 格子中心点绘制 - 用圆点标记格子中心 --------
-                cv2.circle(image, (c_u_i, c_v_i), center_radius, center_color, center_thickness, lineType=cv2.LINE_AA)
-                
-                # -------- 8.11) 可选的格子 ID 标签 --------
-                # 显示格子编号（1-9）在中心位置，受 show_labels 参数控制
-                if show_labels:
-                    cv2.putText(
-                        image,
-                        str(cell.cell_id),
-                        (c_u_i + 5, c_v_i - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        label_color,
-                        2,
-                        lineType=cv2.LINE_AA,
-                    )
-
-                # -------- 8.12) 记录可见格子信息 --------
-                # 跟踪此可见格子的 ID 和深度，用于下游处理
-                cells_msg.visible_cell_ids.append(int(cell.cell_id))
-                cell_msg.depth = float(center_c[2])
-            else:
-                # -------- 8.13) 不可见格子用零值填充 --------
-                # 对于不可见的格子，用零值占位来减小消息大小
-                # （约减少 50% 的消息量，改善 ROS 带宽效率）
-                cell_msg.position_camera_frame = Point(x=0.0, y=0.0, z=0.0)
-                cell_msg.corners_pixel = [
-                    Point32(x=0.0, y=0.0, z=0.0),
-                    Point32(x=0.0, y=0.0, z=0.0),
-                    Point32(x=0.0, y=0.0, z=0.0),
-                    Point32(x=0.0, y=0.0, z=0.0),
-                ]
-                cell_msg.center_pixel = Point32(x=0.0, y=0.0, z=0.0)
-                cell_msg.depth = 0.0
-            cells_msg.cells.append(cell_msg)
+                    # -------- 8.13) 不可见格子用零值填充 --------
+                    # 对于不可见的格子，用零值占位来减小消息大小
+                    # （约减少 50% 的消息量，改善 ROS 带宽效率）
+                    cell_msg.position_camera_frame = Point(x=0.0, y=0.0, z=0.0)
+                    cell_msg.corners_pixel = [
+                        Point32(x=0.0, y=0.0, z=0.0),
+                        Point32(x=0.0, y=0.0, z=0.0),
+                        Point32(x=0.0, y=0.0, z=0.0),
+                        Point32(x=0.0, y=0.0, z=0.0),
+                    ]
+                    cell_msg.center_pixel = Point32(x=0.0, y=0.0, z=0.0)
+                    cell_msg.depth = 0.0
+                cells_msg.cells.append(cell_msg)
 
         # ============== 第九步：完成消息并发布 GridCellArray ==============
         # 设置可见格子计数并发布完整的投影结果
         # 下游节点（如 UI 可视化、坐标转换）可订阅此话题
+        cells_msg.visible_group_ids = sorted(visible_group_ids)
         cells_msg.visible_cells = int(visible_count)
         self.visible_cells_pub.publish(cells_msg)
 
@@ -819,10 +959,10 @@ class ArGridNode(Node):
             # - dt_ms: 图像与里程计的时间差（毫秒）
             status = (
                 f"odom={'ok' if has_odom else 'missing'} "
-                f"front={front_count}/{self.grid_frame.total_cells} "
-                f"visible={visible_count}/{self.grid_frame.total_cells} "
+                f"front={front_count}/{self.total_cells} "
+                f"visible={visible_count}/{self.total_cells} "
                 f"dt_ms={(pose_age_sec * 1000.0):.1f}" if pose_age_sec is not None else
-                f"odom={'ok' if has_odom else 'missing'} front={front_count}/{self.grid_frame.total_cells} visible={visible_count}/{self.grid_frame.total_cells} dt_ms=n/a"
+                f"odom={'ok' if has_odom else 'missing'} front={front_count}/{self.total_cells} visible={visible_count}/{self.total_cells} dt_ms=n/a"
             )
             
             # 在图像左上角 (10, 28) 绘制状态文本

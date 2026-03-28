@@ -7,6 +7,10 @@ std_msgs/Header header
 # Grid cell ID (row-major, starting from 0: row * cols + col)
 int32 cell_id
 
+# 格子组编号（由配置给定）
+# Grid group ID (configured per group)
+int32 group_id
+
 # 格子行列索引
 # Row and column indices
 int32 row

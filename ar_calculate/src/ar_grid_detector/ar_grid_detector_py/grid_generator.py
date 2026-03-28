@@ -267,6 +267,146 @@ class GridFrameGenerator:
             cell_width=cell_width, cell_height=cell_height
         )
 
+    @staticmethod
+    def generate_from_center_points(
+        center_top_left: np.ndarray,
+        center_top_right: np.ndarray,
+        center_bottom_left: Optional[np.ndarray],
+        rows: int,
+        cols: int,
+        cell_width: Optional[float] = None,
+        cell_height: Optional[float] = None,
+        size_source: str = "inferred",
+        strict_size_check: bool = False,
+        size_tolerance: float = 1e-4,
+        single_row_down_axis: Optional[np.ndarray] = None,
+    ) -> GridFrame:
+        if rows <= 0 or cols <= 0:
+            raise ValueError("rows/cols must be > 0")
+
+        ctl = np.asarray(center_top_left, dtype=np.float64)
+        ctr = np.asarray(center_top_right, dtype=np.float64)
+        if ctl.size != 3 or ctr.size != 3:
+            raise ValueError("center_top_left/center_top_right must be [x,y,z]")
+
+        if center_bottom_left is not None:
+            cbl = np.asarray(center_bottom_left, dtype=np.float64)
+            if cbl.size != 3:
+                raise ValueError("center_bottom_left must be [x,y,z]")
+        else:
+            cbl = None
+
+        vec_right_total = ctr - ctl
+        right_total_norm = np.linalg.norm(vec_right_total)
+        if cols > 1:
+            if right_total_norm <= 1e-10:
+                raise ValueError("center_top_left and center_top_right are too close")
+            unit_right = vec_right_total / right_total_norm
+            inferred_cell_width = right_total_norm / float(cols - 1)
+        else:
+            inferred_cell_width = cell_width if (cell_width is not None and cell_width > 0.0) else 0.0
+            unit_right = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+
+        if rows > 1:
+            if cbl is None:
+                raise ValueError("center_bottom_left is required when rows > 1")
+            vec_down_total = cbl - ctl
+            down_total_norm = np.linalg.norm(vec_down_total)
+            if down_total_norm <= 1e-10:
+                raise ValueError("center_top_left and center_bottom_left are too close")
+            unit_down = vec_down_total / down_total_norm
+            inferred_cell_height = down_total_norm / float(rows - 1)
+        else:
+            down_hint = np.asarray(
+                single_row_down_axis if single_row_down_axis is not None else [0.0, 0.0, -1.0],
+                dtype=np.float64,
+            ).reshape(-1)
+            if down_hint.size != 3:
+                raise ValueError("single_row_down_axis must be [x,y,z]")
+            down_proj = down_hint - np.dot(down_hint, unit_right) * unit_right
+            down_proj_norm = np.linalg.norm(down_proj)
+            if down_proj_norm <= 1e-10:
+                fallback = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+                if abs(np.dot(fallback, unit_right)) > 0.95:
+                    fallback = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+                down_proj = fallback - np.dot(fallback, unit_right) * unit_right
+                down_proj_norm = np.linalg.norm(down_proj)
+            if down_proj_norm <= 1e-10:
+                raise ValueError("single_row_down_axis is degenerate")
+            unit_down = down_proj / down_proj_norm
+            if cell_height is not None and cell_height > 0.0:
+                inferred_cell_height = float(cell_height)
+            elif inferred_cell_width > 0.0:
+                inferred_cell_height = float(inferred_cell_width)
+            else:
+                raise ValueError("rows=1 requires cell_height or valid horizontal center spacing")
+
+        normalized_size_source = str(size_source).strip().lower()
+        if normalized_size_source not in ("inferred", "configured"):
+            raise ValueError("size_source must be 'inferred' or 'configured'")
+
+        cfg_cell_width = float(cell_width) if (cell_width is not None and cell_width > 0.0) else None
+        cfg_cell_height = float(cell_height) if (cell_height is not None and cell_height > 0.0) else None
+
+        if normalized_size_source == "configured":
+            if cfg_cell_width is None:
+                raise ValueError("size_source=configured requires positive cell_width")
+            if cfg_cell_height is None:
+                raise ValueError("size_source=configured requires positive cell_height")
+            resolved_cell_width = cfg_cell_width
+            resolved_cell_height = cfg_cell_height
+        else:
+            resolved_cell_width = inferred_cell_width
+            resolved_cell_height = inferred_cell_height
+            if strict_size_check:
+                if cfg_cell_width is not None and abs(cfg_cell_width - inferred_cell_width) > size_tolerance:
+                    raise ValueError(
+                        f"grid.cell_width ({cfg_cell_width}) != inferred width ({inferred_cell_width}) from center points"
+                    )
+                if cfg_cell_height is not None and abs(cfg_cell_height - inferred_cell_height) > size_tolerance:
+                    raise ValueError(
+                        f"grid.cell_height ({cfg_cell_height}) != inferred height ({inferred_cell_height}) from center points"
+                    )
+
+        if resolved_cell_width <= 1e-10 or resolved_cell_height <= 1e-10:
+            raise ValueError("resolved cell size must be positive")
+
+        half_right = unit_right * (resolved_cell_width / 2.0)
+        half_down = unit_down * (resolved_cell_height / 2.0)
+
+        corner_top_left = ctl - half_right - half_down
+        corner_top_right = ctl + unit_right * (cols * resolved_cell_width - resolved_cell_width / 2.0) - half_down
+        corner_bottom_left = ctl + unit_down * (rows * resolved_cell_height - resolved_cell_height / 2.0) - half_right
+
+        grid_frame = GridFrame(
+            rows=rows,
+            cols=cols,
+            cell_width=resolved_cell_width,
+            cell_height=resolved_cell_height,
+            corner_top_left=corner_top_left,
+            corner_top_right=corner_top_right,
+            corner_bottom_left=corner_bottom_left,
+        )
+
+        for row in range(rows):
+            for col in range(cols):
+                cell_id = row * cols + col
+                center = ctl + unit_right * (col * resolved_cell_width) + unit_down * (row * resolved_cell_height)
+                corner_tl = center - half_right - half_down
+                corner_tr = center + half_right - half_down
+                corner_br = center + half_right + half_down
+                corner_bl = center - half_right + half_down
+
+                grid_frame.cells[cell_id] = GridCell(
+                    cell_id=cell_id,
+                    row=row,
+                    col=col,
+                    center_world=center,
+                    corners_world=[corner_tl, corner_tr, corner_br, corner_bl],
+                )
+
+        return grid_frame
+
 
 def convert_cell_centers_to_corners(
     center_top_left: np.ndarray,

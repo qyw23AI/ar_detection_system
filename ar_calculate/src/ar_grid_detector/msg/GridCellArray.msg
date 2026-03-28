@@ -5,8 +5,17 @@ std_msgs/Header header
 
 # 格子架的行数和列数
 # Number of rows and columns in the grid frame
+# 多组场景下该字段不再表示全局统一尺寸，固定为 -1
 int32 rows
 int32 cols
+
+# 组总数
+# Total number of configured grid groups
+int32 total_groups
+
+# 当前帧可见的组编号列表
+# Group IDs that have at least one visible cell in current frame
+int32[] visible_group_ids
 
 # 总格子数
 # Total number of cells

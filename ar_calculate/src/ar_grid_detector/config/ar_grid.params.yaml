@@ -27,6 +27,42 @@
     grid:
       use_yaml: false
       yaml_path: ""
+      default_group_id: 0
+      # 多组格子配置（优先级最高）：
+      # - 留空字符串时，回退到下面的单组参数（rows/cols/corner_*）
+      # - 非空时，按 YAML 列表读取每个组（每组可独立设置 rows/cols/cell_size/corners）
+      # - 当 rows=1 且 input_is_cell_centers=true 时：
+      #     corner_top_left / corner_top_right 视为“最左/最右格子中心点”
+      #     corner_bottom_left 可省略
+      #     cell_height 作为单行格子的高度（若未填则回退到 cell_width）
+      #     single_row_down_axis 决定单行格子高度方向
+      # - centers_size_source:
+      #     inferred   -> 用中心点间距推导单格尺寸（可用 strict_size_check 做一致性校验）
+      #     configured -> 直接使用 cell_width/cell_height 作为固定单格尺寸
+      groups_yaml: |
+        - group_id: 0
+          rows: 3
+          cols: 3
+          cell_width: 0.03
+          cell_height: 0.03
+          centers_size_source: inferred
+          strict_size_check: false
+          size_tolerance: 0.0001
+          input_is_cell_centers: true
+          corner_top_left: [1.671702, -0.640819, 0.688713]
+          corner_top_right: [1.470960, -1.178978, 0.678743]
+          corner_bottom_left: [1.676878, -0.607198, 0.095880]
+        # 单行示例（可按需启用）
+        - group_id: 1
+          rows: 1
+          cols: 6
+          cell_width: 0.117
+          cell_height: 0.117
+          centers_size_source: configured
+          input_is_cell_centers: true
+          corner_top_left: [-0.5050, 0.1332, -0.0932]
+          corner_top_right: [0.0564, -0.0963, -0.0932]
+          single_row_down_axis: [0.0, 0.0, -1.0]
       # true 时直接读取旧 nine_grid_points.yaml 的 grid_points(1..9) 作为格子中心，
       # 自动换算为三个角点，便于与旧版可视化一一对比
       use_legacy_nine_points: false
@@ -38,6 +74,10 @@
       # 仅用于可选一致性校验；格子几何由三个角点决定（单位：米）
       cell_width: 0.03
       cell_height: 0.03
+      # input_is_cell_centers=true 时生效：
+      # inferred(默认): 用中心点推导尺寸
+      # configured: 固定使用 cell_width/cell_height
+      centers_size_source: inferred
       strict_size_check: false
       size_tolerance: 0.0001
 
@@ -51,6 +91,10 @@
       # 重要：用户采集的坐标通常是"站在格子中心位置"的位姿
       # 设为 true 时会自动将格子中心坐标转换为角点坐标
       input_is_cell_centers: true
+
+      # rows=1 且 input_is_cell_centers=true 时生效：
+      # 指定“单行格子高度”的方向提示向量（会自动投影为与行方向垂直）
+      single_row_down_axis: [0.0, 0.0, -1.0]
 
     draw:
       cell_border_color_bgr: [255, 0, 0]
